@@ -49,4 +49,5 @@ Thumbs.db
 
 # Local-only
 local.properties
+secrets.properties
 *.log
