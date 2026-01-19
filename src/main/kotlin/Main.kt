@@ -7,8 +7,11 @@ import kotlin.random.Random
 //TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
 // click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
 fun main() {
-    val w = 64
-    val h = 32
+    val size = 128
+    var w = 64
+    var h = 32
+    w = w
+    h = h
     val seed = Random.nextLong()
     val gen = TectonicWorldGen(w, h, seed)
 
