@@ -1,10 +1,15 @@
 package dev.nda.math
 
 import kotlin.math.*
-import kotlin.random.Random
 
 fun clamp01(v: Float): Float = when {
     v < 0f -> 0f
+    v > 1f -> 1f
+    else -> v
+}
+
+fun clampSigned(v: Float): Float = when {
+    v < -1f -> -1f
     v > 1f -> 1f
     else -> v
 }
@@ -14,7 +19,7 @@ fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {
     return t * t * (3f - 2f * t)
 }
 
-fun normalize01(grid: Array<FloatArray>): Array<FloatArray> {
+fun normalize01InPlace(grid: Field): Field01 {
     val width = grid.size
     val height = grid[0].size
     var mn = Float.POSITIVE_INFINITY
@@ -30,7 +35,7 @@ fun normalize01(grid: Array<FloatArray>): Array<FloatArray> {
     return grid
 }
 
-fun blurOnce(grid: Array<FloatArray>) {
+fun blurOnce(grid: Field) {
     val width = grid.size
     val height = grid[0].size
     val copy = Array(width) { FloatArray(height) }
@@ -52,7 +57,7 @@ fun blurOnce(grid: Array<FloatArray>) {
 }
 
 fun addFractalNoiseSeeded(
-    grid: Array<FloatArray>,
+    grid: Field,
     strength: Float,
     seed: Int
 ) {
@@ -104,12 +109,12 @@ private fun hash01(x: Int, y: Int, seed: Int): Float {
 
 private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 
-fun zeros(width: Int, height: Int): Array<FloatArray> =
+fun zerosField(width: Int, height: Int): Field =
     Array(width) { FloatArray(height) { 0f } }
 
 
 /** Normalize in-place to [-1, +1] by max absolute value. */
-fun normalizeSigned(a: Array<FloatArray>): Array<FloatArray> {
+fun normalizeSignedInPlace(a: Field): FieldSigned {
     val width = a.size
     val height = a[0].size
     var maxAbs = 0f
@@ -125,12 +130,20 @@ fun normalizeSigned(a: Array<FloatArray>): Array<FloatArray> {
     return a
 }
 
-fun signedTo01(s: Array<FloatArray>): Array<FloatArray> {
+fun signedTo01(s: FieldSigned): Field01 {
     val width = s.size
     val height = s[0].size
-    val out = zeros(width, height)
+    val out = zerosField(width, height)
     for (x in 0 until width) for (y in 0 until height) {
         out[x][y] = (s[x][y] * 0.5f + 0.5f).coerceIn(0f, 1f)
     }
     return out
+}
+
+fun addScaledInPlace(dst: Field, src: Field, weight: Float) {
+    val width = dst.size
+    val height = dst[0].size
+    for (x in 0 until width) for (y in 0 until height) {
+        dst[x][y] += src[x][y] * weight
+    }
 }

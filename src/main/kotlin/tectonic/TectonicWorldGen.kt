@@ -19,43 +19,40 @@ class TectonicWorldGen(
     // For each cell: which plate owns it
     private val plateId = Array(width) { IntArray(height) }
 
-    fun generateHeightmap(): Array<FloatArray> {
+    fun generateHeightmap(): Field01 {
         val noiseSeed = seed.toInt() xor 0xBEEFCAFE.toInt()
         assignPlateOwnership()
 
-        val h = Array(width) { FloatArray(height) { 0f } }
+        // --- Build layers (Signed / 01) ---
+        val continentSigned: FieldSigned = buildContinentSigned()
+        printHeightmap(signedTo01(continentSigned))
 
-
-        val continent = buildContinentField()
-
-        val continentStrength = params.continentMaskStrength
-        printHeightmap(signedTo01(continent))
-
-        val plateBias = buildPlateBiasField().also { blurOnce(it) }
-        printHeightmap(signedTo01(plateBias))
+        val plateBiasSigned: FieldSigned = buildPlateBiasSigned().also { blurOnce(it) }
+        printHeightmap(signedTo01(plateBiasSigned))
 
         val boundaryFields = buildBoundaryFields()
-        val boundary = boundaryFields.boundarySigned
-        printHeightmap(signedTo01(boundaryFields.boundarySigned))
-        printHeightmap(boundaryFields.faultMask01) // already 0..1
+        val boundarySigned: FieldSigned = boundaryFields.boundarySigned
+        val faultMask01: Field01 = boundaryFields.faultMask01
 
-        val noise = buildNoiseField(noiseSeed)
-        printHeightmap(signedTo01(noise))
+        printHeightmap(signedTo01(boundarySigned))
+        printHeightmap(faultMask01) // already 0..1
 
-        for (x in 0 until width) for (y in 0 until height) {
-            h[x][y] += continent[x][y] * continentStrength
-            h[x][y] += plateBias[x][y] * 0.8f
-            h[x][y] += boundary[x][y] * 1.0f // TEMP knob; later goes into mixer
-            h[x][y] += noise[x][y] * params.noiseStrength
-        }
+        val noiseSigned: FieldSigned = buildNoiseSigned(noiseSeed)
+        printHeightmap(signedTo01(noiseSigned))
 
-        // 4) Smooth a bit
-        repeat(params.smoothPasses) { blurOnce(h) }
+        // --- Mix layers into raw height (signed-ish accumulator) ---
+        val heightRaw: Field = zerosField(width, height)
 
-        // 5) Normalize to 0..1
-        normalize01(h)
+        addScaledInPlace(heightRaw, continentSigned, params.continentMaskStrength)
+        addScaledInPlace(heightRaw, plateBiasSigned, params.plateBiasStrength)
+        addScaledInPlace(heightRaw, boundarySigned, params.boundaryStrength)
+        addScaledInPlace(heightRaw, noiseSigned, params.noiseStrength)
 
-        return h
+        // --- Post smoothing ---
+        repeat(params.smoothPasses) { blurOnce(heightRaw) }
+
+        // --- Normalize final to [0,1] ---
+        return normalize01InPlace(heightRaw)
     }
 
     private fun assignPlateOwnership() {
@@ -101,8 +98,8 @@ class TectonicWorldGen(
         return list
     }
 
-    private fun buildContinentField(): Array<FloatArray> {
-        val f = zeros(width, height)
+    private fun buildContinentSigned(): FieldSigned {
+        val f = zerosField(width, height)
 
         // Simple “one or two blobs” mask: pick 1-3 centers, add radial falloff
         val centers = (1 + rng.nextInt(3)).coerceAtMost(3)
@@ -135,7 +132,7 @@ class TectonicWorldGen(
         }
 
         // Normalize field into [-1, +1] so all layers are comparable
-        return normalizeSigned(f)
+        return normalizeSignedInPlace(f)
     }
 
 
@@ -146,8 +143,8 @@ class TectonicWorldGen(
         return 1f - smoothstep(0.1f, 0.9f, d)
     }
 
-    private fun buildPlateBiasField(): Array<FloatArray> {
-        val f = zeros(width, height)
+    private fun buildPlateBiasSigned(): FieldSigned {
+        val f = zerosField(width, height)
 
         for (x in 0 until width) {
             for (y in 0 until height) {
@@ -159,18 +156,17 @@ class TectonicWorldGen(
             }
         }
 
-        return normalizeSigned(f)
+        return normalizeSignedInPlace(f)
     }
 
     private data class BoundaryFields(
-        val boundarySigned: Array<FloatArray>, // [-1,+1]
-        val faultMask01: Array<FloatArray>     // [0,1]
+        val boundarySigned: FieldSigned, // [-1,+1]
+        val faultMask01: Field01         // [0,1]
     )
 
     private fun buildBoundaryFields(): BoundaryFields {
-        val noiseSeedOffset = 1337 // any constant; could also derive from world seed if you want
-        val boundary = zeros(width, height)      // signed contribution
-        val faultMask = zeros(width, height)     // we'll store 0..1 here
+        val boundarySigned = zerosField(width, height)      // signed contribution
+        val faultMask01 = zerosField(width, height)     // we'll store 0..1 here
 
         // 1) Compute local boundary contributions (no spreading yet)
         for (x in 0 until width) {
@@ -209,7 +205,7 @@ class TectonicWorldGen(
                 consider(x, y - 1)
 
                 val boundaryIntensity = clamp01(kotlin.math.max(ridge, kotlin.math.max(rift, rough)))
-                faultMask[x][y] = boundaryIntensity
+                faultMask01[x][y] = boundaryIntensity
 
                 // Signed height effect before normalization:
                 // + ridges, - rifts
@@ -231,27 +227,27 @@ class TectonicWorldGen(
                 // Slight mark so later blur spreads ranges outward
                 v += boundaryIntensity * 0.05f
 
-                boundary[x][y] = v
+                boundarySigned[x][y] = v
             }
         }
 
         // 2) Spread boundary effects outward into ranges via repeated blur
-        val passes = kotlin.math.max(1, (params.boundaryFalloff / 2f).roundToInt())
-        repeat(passes) { blurOnce(boundary) }
+        val passes = max(1, (params.boundaryFalloff / 2f).roundToInt())
+        repeat(passes) { blurOnce(boundarySigned) }
 
         // (Optional) also blur fault mask a little so it reads as a proximity field
         // Helps volcano placement and “mystic along faults” feel.
-        repeat(kotlin.math.max(1, passes / 2)) { blurOnce(faultMask) }
+        repeat(max(1, passes / 2)) { blurOnce(faultMask01) }
 
         // 3) Normalize outputs
-        normalizeSigned(boundary)     // -> [-1,+1]
-        normalize01(faultMask)        // -> [0,1]
+        normalizeSignedInPlace(boundarySigned)     // -> [-1,+1]
+        normalize01InPlace(faultMask01)        // -> [0,1]
 
-        return BoundaryFields(boundarySigned = boundary, faultMask01 = faultMask)
+        return BoundaryFields(boundarySigned = boundarySigned, faultMask01 = faultMask01)
     }
 
-    private fun buildNoiseField(noiseSeed: Int): Array<FloatArray> {
-        val f = zeros(width, height)
+    private fun buildNoiseSigned(noiseSeed: Int): FieldSigned {
+        val f = zerosField(width, height)
 
         // Reuse your current fractal noise function which adds into the array.
         // We pass strength=1f (unit layer), normalize, then apply real strength in the mixer later.
@@ -261,7 +257,7 @@ class TectonicWorldGen(
         // We'll do mean-centering before normalizeSigned.
         meanCenterInPlace(f)
 
-        return normalizeSigned(f)
+        return normalizeSignedInPlace(f)
     }
 
     private fun meanCenterInPlace(a: Array<FloatArray>) {
