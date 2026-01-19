@@ -51,18 +51,23 @@ fun blurOnce(grid: Array<FloatArray>) {
     for (x in 0 until width) for (y in 0 until height) grid[x][y] = copy[x][y]
 }
 
-fun addFractalNoise(grid: Array<FloatArray>, strength: Float, rng: Random) {
+fun addFractalNoiseSeeded(
+    grid: Array<FloatArray>,
+    strength: Float,
+    seed: Int
+) {
     val width = grid.size
     val height = grid[0].size
-    val baseSeed = rng.nextInt()
     val octaves = 4
     var amp = strength
     var freq = 1f / 24f // larger = noisier; tune
+
     repeat(octaves) { o ->
+        val octaveSeed = seed + o * 999
         for (x in 0 until width) {
             for (y in 0 until height) {
-                val n = valueNoise2D(x.toFloat() * freq, y.toFloat() * freq, baseSeed + o * 999)
-                grid[x][y] += (n - 0.5f) * 2f * amp
+                val n = valueNoise2D(x.toFloat() * freq, y.toFloat() * freq, octaveSeed)
+                grid[x][y] += (n - 0.5f) * 2f * amp // signed
             }
         }
         amp *= 0.5f
@@ -94,7 +99,38 @@ private fun hash01(x: Int, y: Int, seed: Int): Float {
     n = (n xor (n shr 13)) * 1274126177
     n = n xor (n shr 16)
     // map to 0..1
-    return ((n ushr 1) % 1_000_000) / 1_000_000f
+    return ((n ushr 1) and 0x7fffffff).toFloat() / Int.MAX_VALUE.toFloat()
 }
 
 private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
+fun zeros(width: Int, height: Int): Array<FloatArray> =
+    Array(width) { FloatArray(height) { 0f } }
+
+
+/** Normalize in-place to [-1, +1] by max absolute value. */
+fun normalizeSigned(a: Array<FloatArray>): Array<FloatArray> {
+    val width = a.size
+    val height = a[0].size
+    var maxAbs = 0f
+    for (x in 0 until width) for (y in 0 until height) {
+        val v = abs(a[x][y])
+        if (v > maxAbs) maxAbs = v
+    }
+    if (maxAbs < 1e-6f) return a
+    val inv = 1f / maxAbs
+    for (x in 0 until width) for (y in 0 until height) {
+        a[x][y] *= inv
+    }
+    return a
+}
+
+fun signedTo01(s: Array<FloatArray>): Array<FloatArray> {
+    val width = s.size
+    val height = s[0].size
+    val out = zeros(width, height)
+    for (x in 0 until width) for (y in 0 until height) {
+        out[x][y] = (s[x][y] * 0.5f + 0.5f).coerceIn(0f, 1f)
+    }
+    return out
+}
