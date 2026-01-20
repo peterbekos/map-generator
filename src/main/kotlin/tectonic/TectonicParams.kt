@@ -27,4 +27,25 @@ data class TectonicParams(
     val craterRimStartMul: Float = 0.90f,
     val craterRimEndMul: Float = 1.18f,
     val craterEjectaEndMul: Float = 1.85f,
+
+    // --- Volcanos ---
+    val volcanoStrength: Float = 1f,
+    val volcanoCount: Int = 3,
+
+    // placement
+    val volcanoFaultPower: Float = 2.2f,     // higher = hug faults more
+    val volcanoMinSpacingTiles: Int = 10,    // avoids clustering too tightly
+
+    // shape
+    val volcanoRadiusMinMul: Float = 0.16f,  // * min(width,height)
+    val volcanoRadiusMaxMul: Float = 0.28f,
+    val volcanoConeHeight: Float = 0.5f,
+    val volcanoCalderaChance: Float = 0.35f,
+    val volcanoCalderaDepth: Float = 0.5f,
+    val volcanoWarp: Float = 0.12f,
+    val volcanoRoughness: Float = 0.10f,
+
+    // ash / influence
+    val volcanoAshRadiusMul: Float = 1.5f,   // ash radius = radius * mul
+    val volcanoAshStrength: Float = 1.0f,     // just controls mask intensity
 )

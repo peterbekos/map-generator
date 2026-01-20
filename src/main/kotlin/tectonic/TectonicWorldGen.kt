@@ -22,6 +22,7 @@ class TectonicWorldGen(
     fun generateHeightmap(): Field01 {
         val noiseSeed = seed.toInt() xor 0xBEEFCAFE.toInt()
         val craterSeed = seed.toInt() xor 0xC0FFEE
+        val volcanoSeed = seed.toInt() xor 0x40CA
         assignPlateOwnership()
 
         // --- Build layers (Signed / 01) ---
@@ -48,6 +49,12 @@ class TectonicWorldGen(
         printHeightmap(signedTo01(craterSigned))
 //        printHeightmap(craterMask01)
 
+        val volcanoes = buildVolcanoFields(faultMask01, boundarySigned, volcanoSeed xor 0x2222, count = (params.volcanoCount).coerceAtLeast(1))
+
+        printHeightmap(signedTo01(volcanoes.volcanoSigned))
+//        printHeightmap(volcanoes.ashMask01)
+//        printHeightmap(volcanoes.volcanoMask01)
+
         // --- Mix layers into raw height (signed-ish accumulator) ---
         val heightRaw: Field = zerosField(width, height)
 
@@ -62,6 +69,7 @@ class TectonicWorldGen(
 
         // mix craters after blur for more sharpness
         addScaledInPlace(heightRaw, craterSigned, params.craterStrength * (2f / 5f))
+        addScaledInPlace(heightRaw, volcanoes.volcanoSigned, params.volcanoStrength)
 
         // --- Normalize final to [0,1] ---
         return normalize01InPlace(heightRaw)
@@ -293,10 +301,10 @@ class TectonicWorldGen(
         val craterSigned: Field = zerosField(width, height)
         val craterMask01: Field = zerosField(width, height)
 
-        val rBase = kotlin.math.min(width, height).toFloat()
+        val rBase = min(width, height).toFloat()
 
         // deterministic RNG for crater placement
-        val rng = kotlin.random.Random(craterSeed)
+        val rng = Random(craterSeed)
 
         repeat(params.craterCount) { i ->
             // pick center anywhere (you can bias away from edges later if you want)
@@ -417,6 +425,242 @@ class TectonicWorldGen(
                 val a = mask01[x][y]
                 val b = mask
                 mask01[x][y] = 1f - (1f - a) * (1f - b) // probabilistic OR / smooth union
+            }
+        }
+    }
+
+    private data class VolcanoFields(
+        val volcanoSigned: FieldSigned,
+        val volcanoMask01: Field01,
+        val ashMask01: Field01
+    )
+
+    private fun buildVolcanoFields(
+        faultMask01: Field01,
+        boundarySigned: FieldSigned,
+        volcanoSeed: Int,
+        count: Int = params.volcanoCount
+    ): VolcanoFields {
+        val volcanoSigned: Field = zerosField(width, height)
+        val volcanoMask01: Field = zerosField(width, height)
+        val ashMask01: Field = zerosField(width, height)
+
+        val rng = Random(volcanoSeed)
+        val base = min(width, height).toFloat()
+
+        // Choose centers weighted by faultMask01
+        val centers = pickVolcanoCenters(
+            faultMask01 = faultMask01,
+            seed = volcanoSeed,
+            count = count,
+            minSpacingTiles = params.volcanoMinSpacingTiles
+        )
+
+        centers.forEachIndexed { i, (cx, cy) ->
+            val radius = (
+                    params.volcanoRadiusMinMul +
+                            rng.nextFloat() * (params.volcanoRadiusMaxMul - params.volcanoRadiusMinMul)
+                    ) * base
+
+            val coneH = params.volcanoConeHeight * (0.75f + rng.nextFloat() * 0.5f)
+            val warp = params.volcanoWarp * (0.6f + rng.nextFloat() * 0.8f)
+
+            val caldera = rng.nextFloat() < params.volcanoCalderaChance
+            val calderaDepth = if (caldera) params.volcanoCalderaDepth * (0.7f + rng.nextFloat() * 0.6f) else 0f
+
+            stampVolcano(
+                heightSigned = volcanoSigned,
+                volcanoMask01 = volcanoMask01,
+                ashMask01 = ashMask01,
+                cx = cx,
+                cy = cy,
+                radius = radius,
+                coneHeight = coneH,
+                calderaDepth = calderaDepth,
+                warp = warp,
+                noiseSeed = volcanoSeed + i * 4099,
+                faultMask01 = faultMask01,
+                boundarySigned = boundarySigned
+            )
+        }
+
+        normalizeSignedInPlace(volcanoSigned)
+        normalize01InPlace(volcanoMask01)
+        normalize01InPlace(ashMask01)
+
+        return VolcanoFields(volcanoSigned, volcanoMask01, ashMask01)
+    }
+
+    private fun pickVolcanoCenters(
+        faultMask01: Field01,
+        seed: Int,
+        count: Int,
+        minSpacingTiles: Int
+    ): List<Pair<Float, Float>> {
+        val rng = Random(seed)
+        val chosen = ArrayList<Pair<Float, Float>>(count)
+
+        val attempts = count * 60
+        repeat(attempts) {
+            if (chosen.size >= count) return@repeat
+
+            val x = rng.nextInt(width)
+            val y = rng.nextInt(height)
+
+            val w = faultMask01[x][y].pow(params.volcanoFaultPower)
+            if (rng.nextFloat() > w) return@repeat
+
+            // spacing check
+            val ok = chosen.all { (cx, cy) ->
+                val dx = x - cx
+                val dy = y - cy
+                (dx * dx + dy * dy) >= (minSpacingTiles * minSpacingTiles)
+            }
+            if (ok) chosen.add(x.toFloat() to y.toFloat())
+        }
+
+        // if we didn’t get enough, fill randomly (rare)
+        while (chosen.size < count) {
+            chosen.add(rng.nextInt(width).toFloat() to rng.nextInt(height).toFloat())
+        }
+        return chosen
+    }
+
+    private enum class VolcanoType { SHIELD, STRATO }
+
+    private data class VolcanoShape(
+        val rMul: Float,
+        val hMul: Float,
+        val falloffPower: Float,
+        val ashMul: Float,
+        val roughMul: Float,
+        val calderaMul: Float
+    )
+
+    private fun stampVolcano(
+        heightSigned: Field,
+        volcanoMask01: Field01,
+        ashMask01: Field01,
+        cx: Float,
+        cy: Float,
+        radius: Float,
+        coneHeight: Float,
+        calderaDepth: Float,
+        warp: Float,
+        noiseSeed: Int,
+        faultMask01: Field01,
+        boundarySigned: FieldSigned
+    ) {
+        val ix = cx.toInt().coerceIn(0, width - 1)
+        val iy = cy.toInt().coerceIn(0, height - 1)
+
+        // ---- Choose volcano type based on tectonics ----
+        val fault = faultMask01[ix][iy]                      // 0..1
+        val conv = clamp01(boundarySigned[ix][iy] * 0.5f + 0.5f) // map [-1,+1] -> [0,1]
+        // But we only care about "convergent-ness", so bias toward positive boundarySigned:
+        val convergent01 = clamp01(boundarySigned[ix][iy])    // 0..1, only positive part
+
+        // Strato favored on strong faults + convergent boundaries
+        val stratoChance = clamp01(
+            0.15f + 0.75f * fault.pow(1.2f) + 0.85f * convergent01
+        )
+
+        val type = if (Random(noiseSeed).nextFloat() < stratoChance)
+            VolcanoType.STRATO else VolcanoType.SHIELD
+
+        // ---- Shape modifiers by type ----
+        val shape = when (type) {
+            VolcanoType.SHIELD -> VolcanoShape(
+                rMul = 1.55f,
+                hMul = 0.72f,
+                falloffPower = 1.15f,
+                ashMul = 0.70f,
+                roughMul = 0.70f,
+                calderaMul = 0.70f
+            )
+            VolcanoType.STRATO -> VolcanoShape(
+                rMul = 0.78f,
+                hMul = 1.25f,
+                falloffPower = 3.00f,
+                ashMul = 1.35f,
+                roughMul = 1.15f,
+                calderaMul = 1.10f
+            )
+        }
+        val (rMul, hMul, falloffPower, ashMul, roughMul, calderaMul) = shape
+
+        val r = (radius * rMul).coerceAtLeast(3f) // keep visible on small maps
+        val h = coneHeight * hMul
+        val calderaD = calderaDepth * calderaMul
+        val rAsh = r * params.volcanoAshRadiusMul
+
+        val minX = floor(cx - rAsh).toInt().coerceIn(0, width - 1)
+        val maxX = ceil(cx + rAsh).toInt().coerceIn(0, width - 1)
+        val minY = floor(cy - rAsh).toInt().coerceIn(0, height - 1)
+        val maxY = ceil(cy + rAsh).toInt().coerceIn(0, height - 1)
+
+        // Noise frequencies scale with volcano size so small maps still look good
+        val warpFreq = (1f / (r * 0.55f)).coerceIn(0.08f, 0.45f)
+        val roughFreq = (1f / (r * 0.30f)).coerceIn(0.10f, 0.70f)
+        val ashFreq = (1f / (r * 1.10f)).coerceIn(0.03f, 0.20f)
+
+        for (x in minX..maxX) {
+            for (y in minY..maxY) {
+                val dx = x.toFloat() - cx
+                val dy = y.toFloat() - cy
+                val d = sqrt(dx * dx + dy * dy)
+                if (d > rAsh) continue
+
+                // Stable warp (irregular cone edge)
+                val w = (valueNoise2D(x.toFloat() * warpFreq, y.toFloat() * warpFreq, noiseSeed) - 0.5f) * 2f
+                val wd = d * (1f + warp * w)
+
+                var delta = 0f
+
+                // ---- Cone ----
+                if (wd < r) {
+                    val u = (wd / r).coerceIn(0f, 1f)  // 0 center -> 1 edge
+                    val core = (1f - u).coerceIn(0f, 1f)
+
+                    // Shield: gentle slope (power ~1)
+                    // Strato: steep cone (power ~3)
+                    val cone = core.pow(falloffPower)
+
+                    delta += cone * h
+
+                    // Rough lava/rock texture, scaled by cone strength
+                    val rough = (valueNoise2D(x.toFloat() * roughFreq, y.toFloat() * roughFreq, noiseSeed xor 0x1234) - 0.5f) * 2f
+                    delta += rough * params.volcanoRoughness * roughMul * cone
+
+                    // Volcano influence mask (smooth union)
+                    val m = cone // already 0..1-ish
+                    volcanoMask01[x][y] = 1f - (1f - volcanoMask01[x][y]) * (1f - m)
+                }
+
+                // ---- Caldera (optional) ----
+                if (calderaD > 0f) {
+                    val rCaldera = r * (if (type == VolcanoType.STRATO) 0.26f else 0.18f)
+                    if (wd < rCaldera) {
+                        val u = (wd / rCaldera).coerceIn(0f, 1f)
+                        val bowl = 1f - (u * u)
+                        delta -= bowl * calderaD
+                    }
+                }
+
+                // ---- Ash blanket (wide, mostly 0..1 mask) ----
+                val ashU = (wd / rAsh).coerceIn(0f, 1f)
+                val ashCore = (1f - ashU).coerceIn(0f, 1f)
+
+                // Strato: more ash, slightly broader feel; Shield: less
+                val ashBase = ashCore * ashCore * params.volcanoAshStrength * ashMul
+
+                val ashTex = 0.78f + 0.22f * ((valueNoise2D(x.toFloat() * ashFreq, y.toFloat() * ashFreq, noiseSeed xor 0xBEEF) - 0.5f) * 2f)
+                val ashVal = (ashBase * ashTex).coerceIn(0f, 1f)
+
+                // Smooth union so multiple volcano ash blankets stack nicely
+                ashMask01[x][y] = 1f - (1f - ashMask01[x][y]) * (1f - ashVal)
+
+                heightSigned[x][y] += delta
             }
         }
     }
