@@ -99,7 +99,7 @@ fun valueNoise2D(x: Float, y: Float, seed: Int): Float {
     return lerp(x1, x2, v)
 }
 
-private fun hash01(x: Int, y: Int, seed: Int): Float {
+fun hash01(x: Int, y: Int, seed: Int): Float {
     var n = x * 374761393 + y * 668265263 + seed * 1442695041
     n = (n xor (n shr 13)) * 1274126177
     n = n xor (n shr 16)
@@ -107,7 +107,7 @@ private fun hash01(x: Int, y: Int, seed: Int): Float {
     return ((n ushr 1) and 0x7fffffff).toFloat() / Int.MAX_VALUE.toFloat()
 }
 
-private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 
 fun zerosField(width: Int, height: Int): Field =
     Array(width) { FloatArray(height) { 0f } }

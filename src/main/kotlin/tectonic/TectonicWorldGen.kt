@@ -21,13 +21,14 @@ class TectonicWorldGen(
 
     fun generateHeightmap(): Field01 {
         val noiseSeed = seed.toInt() xor 0xBEEFCAFE.toInt()
+        val craterSeed = seed.toInt() xor 0xC0FFEE
         assignPlateOwnership()
 
         // --- Build layers (Signed / 01) ---
         val continentSigned: FieldSigned = buildContinentSigned()
         printHeightmap(signedTo01(continentSigned))
 
-        val plateBiasSigned: FieldSigned = buildPlateBiasSigned().also { blurOnce(it) }
+        val plateBiasSigned: FieldSigned = buildPlateBiasSigned()
         printHeightmap(signedTo01(plateBiasSigned))
 
         val boundaryFields = buildBoundaryFields()
@@ -35,10 +36,17 @@ class TectonicWorldGen(
         val faultMask01: Field01 = boundaryFields.faultMask01
 
         printHeightmap(signedTo01(boundarySigned))
-        printHeightmap(faultMask01) // already 0..1
+//        printHeightmap(faultMask01) // already 0..1
 
         val noiseSigned: FieldSigned = buildNoiseSigned(noiseSeed)
         printHeightmap(signedTo01(noiseSigned))
+
+        val craterFields = buildCraterFields(craterSeed)
+        val craterSigned = craterFields.craterSigned
+        val craterMask01 = craterFields.craterMask01
+
+        printHeightmap(signedTo01(craterSigned))
+//        printHeightmap(craterMask01)
 
         // --- Mix layers into raw height (signed-ish accumulator) ---
         val heightRaw: Field = zerosField(width, height)
@@ -47,9 +55,13 @@ class TectonicWorldGen(
         addScaledInPlace(heightRaw, plateBiasSigned, params.plateBiasStrength)
         addScaledInPlace(heightRaw, boundarySigned, params.boundaryStrength)
         addScaledInPlace(heightRaw, noiseSigned, params.noiseStrength)
+        addScaledInPlace(heightRaw, craterSigned, params.craterStrength * (3f / 5f))
 
         // --- Post smoothing ---
         repeat(params.smoothPasses) { blurOnce(heightRaw) }
+
+        // mix craters after blur for more sharpness
+        addScaledInPlace(heightRaw, craterSigned, params.craterStrength * (2f / 5f))
 
         // --- Normalize final to [0,1] ---
         return normalize01InPlace(heightRaw)
@@ -126,7 +138,6 @@ class TectonicWorldGen(
                 val m = (mask * (1f - 0.6f * edge))
 
                 // Convert to SIGNED around 0 (neutral at ~0.5)
-                // IMPORTANT: no params.continentMaskStrength here; that becomes a mixer knob later.
                 f[x][y] = (m - 0.5f)
             }
         }
@@ -270,6 +281,143 @@ class TectonicWorldGen(
         val mean = sum / n.toFloat()
         for (x in 0 until width) for (y in 0 until height) {
             a[x][y] -= mean
+        }
+    }
+
+    private data class CraterFields(
+        val craterSigned: FieldSigned, // [-1,+1] contribution to height
+        val craterMask01: Field01      // [0,1] where craters exist (bowl/rim/ejecta)
+    )
+
+    private fun buildCraterFields(craterSeed: Int): CraterFields {
+        val craterSigned: Field = zerosField(width, height)
+        val craterMask01: Field = zerosField(width, height)
+
+        val rBase = kotlin.math.min(width, height).toFloat()
+
+        // deterministic RNG for crater placement
+        val rng = kotlin.random.Random(craterSeed)
+
+        repeat(params.craterCount) { i ->
+            // pick center anywhere (you can bias away from edges later if you want)
+            val cx = rng.nextFloat() * (width - 1)
+            val cy = rng.nextFloat() * (height - 1)
+
+            val rMinTiles = 6f
+            val rMaxTiles = 14f
+
+            val radius = (params.craterRadiusMinMul + rng.nextFloat() * (params.craterRadiusMaxMul - params.craterRadiusMinMul)) * rBase
+
+            val radiusClamped = radius.coerceIn(rMinTiles, rMaxTiles)
+
+            // Per-crater variation (subtle)
+            val depth = params.craterDepth * (0.75f + rng.nextFloat() * 0.5f)
+            val rim = params.craterRim * (0.75f + rng.nextFloat() * 0.5f)
+            val ejecta = params.craterEjecta * (0.75f + rng.nextFloat() * 0.5f)
+            val warp = params.craterWarp * (0.6f + rng.nextFloat() * 0.8f)
+
+            stampCraterMassNearNeutral(
+                heightSigned = craterSigned,
+                mask01 = craterMask01,
+                cx = cx,
+                cy = cy,
+                radius = radiusClamped,
+                depth = depth,
+                rim = rim,
+                ejecta = ejecta,
+                warp = warp,
+                noiseSeed = craterSeed + i * 1337
+            )
+        }
+
+        // Normalize outputs
+        normalizeSignedInPlace(craterSigned)
+        normalize01InPlace(craterMask01)
+
+        return CraterFields(
+            craterSigned = craterSigned,
+            craterMask01 = craterMask01
+        )
+    }
+
+    private fun stampCraterMassNearNeutral(
+        heightSigned: Field,
+        mask01: Field,
+        cx: Float,
+        cy: Float,
+        radius: Float,
+        depth: Float,
+        rim: Float,
+        ejecta: Float,
+        warp: Float,
+        noiseSeed: Int
+    ) {
+        val rInner = radius * params.craterInnerRadiusMul
+        val rRimStart = radius * params.craterRimStartMul
+        val rRimEnd = radius * params.craterRimEndMul
+        val rEjectaEnd = radius * params.craterEjectaEndMul
+
+        val minX = floor(cx - rEjectaEnd).toInt().coerceIn(0, width - 1)
+        val maxX = ceil(cx + rEjectaEnd).toInt().coerceIn(0, width - 1)
+        val minY = floor(cy - rEjectaEnd).toInt().coerceIn(0, height - 1)
+        val maxY = ceil(cy + rEjectaEnd).toInt().coerceIn(0, height - 1)
+
+        // Bowl is negative, rim+ejecta is positive.
+        // We keep it "near neutral" by making bowl narrower and rim/ejecta wider.
+        for (x in minX..maxX) {
+            for (y in minY..maxY) {
+                val dx = x.toFloat() - cx
+                val dy = y.toFloat() - cy
+                val d = sqrt(dx * dx + dy * dy)
+                if (d > rEjectaEnd) continue
+
+                // Warp: stable distortion so it’s not perfectly circular
+                val w = (valueNoise2D(x.toFloat() * 0.9f, y.toFloat() * 0.9f, noiseSeed) - 0.5f) * 2f // -1..1
+                val warpedD = d * (1f + warp * w)
+
+                var delta = 0f
+                var mask = 0f
+
+                // 1) Bowl (negative): narrow + soft curve
+                if (warpedD < rInner) {
+                    val t = 1f - (warpedD / rInner) // 1 at center -> 0 at edge
+                    val bowl = smoothstep(0f, 1f, t).pow(params.craterBowlPower)
+                    delta -= bowl * depth
+                    mask = max(mask, bowl)
+                }
+
+                // 2) Rim ring (positive): bell-shaped ring
+                if (warpedD in rRimStart..rRimEnd) {
+                    val t = (warpedD - rRimStart) / (rRimEnd - rRimStart)
+                    val bell = sin(t * Math.PI.toFloat()) // 0..1..0
+                    delta += bell * rim
+                    mask = max(mask, bell)
+                }
+
+                // 3) Ejecta (mostly positive): deposits with texture
+                if (warpedD > radius && warpedD < rEjectaEnd) {
+                    val falloff = 1f - ((warpedD - radius) / (rEjectaEnd - radius)) // 1 near rim -> 0 outer
+
+                    // textured deposition noise
+                    val n = (valueNoise2D(x.toFloat() * 2.3f, y.toFloat() * 2.3f, noiseSeed xor 0x5A5A) - 0.5f) * 2f // -1..1
+                    val n01 = (n * 0.5f + 0.5f) // 0..1
+                    val biased = lerp(n, n01, params.craterEjectaBias)
+
+                    val ripple = 0.70f + 0.30f * cos(warpedD / (radius * 0.18f))
+
+                    val dep = falloff * ejecta * (0.75f * biased + 0.25f * ripple)
+                    delta += dep
+                    mask = max(mask, falloff)
+                }
+
+                val cur = heightSigned[x][y]
+                val atten = if (delta > 0f) (1f - clamp01(cur * 0.9f)) else 1f
+                heightSigned[x][y] = cur + delta * atten
+
+                val a = mask01[x][y]
+                val b = mask
+                mask01[x][y] = 1f - (1f - a) * (1f - b) // probabilistic OR / smooth union
+            }
         }
     }
 
