@@ -59,21 +59,20 @@ fun blurOnce(grid: Field) {
 fun addFractalNoiseSeeded(
     grid: Field,
     strength: Float,
-    seed: Int
+    seed: Int,
+    basePeriodTiles: Float = 24f,
+    octaves: Int = 4
 ) {
     val width = grid.size
     val height = grid[0].size
-    val octaves = 4
     var amp = strength
-    var freq = 1f / 24f // larger = noisier; tune
+    var freq = 1f / basePeriodTiles
 
     repeat(octaves) { o ->
         val octaveSeed = seed + o * 999
-        for (x in 0 until width) {
-            for (y in 0 until height) {
-                val n = valueNoise2D(x.toFloat() * freq, y.toFloat() * freq, octaveSeed)
-                grid[x][y] += (n - 0.5f) * 2f * amp // signed
-            }
+        for (x in 0 until width) for (y in 0 until height) {
+            val n = valueNoise2D(x.toFloat() * freq, y.toFloat() * freq, octaveSeed)
+            grid[x][y] += (n - 0.5f) * 2f * amp
         }
         amp *= 0.5f
         freq *= 2f
@@ -145,5 +144,20 @@ fun addScaledInPlace(dst: Field, src: Field, weight: Float) {
     val height = dst[0].size
     for (x in 0 until width) for (y in 0 until height) {
         dst[x][y] += src[x][y] * weight
+    }
+}
+
+fun meanCenterInPlace(f: Field) {
+    val width = f.size
+    val height = f[0].size
+    var sum = 0f
+    var n = 0
+    for (x in 0 until width) for (y in 0 until height) {
+        sum += f[x][y]
+        n++
+    }
+    val mean = sum / n.toFloat()
+    for (x in 0 until width) for (y in 0 until height) {
+        f[x][y] -= mean
     }
 }

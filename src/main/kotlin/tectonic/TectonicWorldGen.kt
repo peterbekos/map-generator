@@ -1,6 +1,7 @@
 package dev.nda.tectonic
 
 import dev.nda.asciiprint.printHeightmap
+import dev.nda.fieldgen.NoiseModule
 import dev.nda.math.Vec2
 import dev.nda.math.*
 import kotlin.math.*
@@ -9,10 +10,10 @@ import kotlin.random.Random
 class TectonicWorldGen(
     private val width: Int,
     private val height: Int,
-    private val seed: Long,
+    private val worldSeed: Long,
     private val params: TectonicParams = TectonicParams()
 ) {
-    private val rng = Random(seed)
+    private val rng = Random(worldSeed)
 
     private val plates: List<Plate> = generatePlates()
 
@@ -20,9 +21,9 @@ class TectonicWorldGen(
     private val plateId = Array(width) { IntArray(height) }
 
     fun generateHeightmap(): Field01 {
-        val noiseSeed = seed.toInt() xor 0xBEEFCAFE.toInt()
-        val craterSeed = seed.toInt() xor 0xC0FFEE
-        val volcanoSeed = seed.toInt() xor 0x40CA
+        val noiseSeed = worldSeed.toInt() xor 0xBEEFCAFE.toInt()
+        val craterSeed = worldSeed.toInt() xor 0xC0FFEE
+        val volcanoSeed = worldSeed.toInt() xor 0x40CA
         assignPlateOwnership()
 
         // --- Build layers (Signed / 01) ---
@@ -39,7 +40,8 @@ class TectonicWorldGen(
         printHeightmap(signedTo01(boundarySigned))
 //        printHeightmap(faultMask01) // already 0..1
 
-        val noiseSigned: FieldSigned = buildNoiseSigned(noiseSeed)
+        val noiseFields = NoiseModule.buildNoiseSigned(width, height, worldSeed)
+        val noiseSigned = noiseFields.noiseSigned
         printHeightmap(signedTo01(noiseSigned))
 
         val craterFields = buildCraterFields(craterSeed)
@@ -49,7 +51,12 @@ class TectonicWorldGen(
         printHeightmap(signedTo01(craterSigned))
 //        printHeightmap(craterMask01)
 
-        val volcanoes = buildVolcanoFields(faultMask01, boundarySigned, volcanoSeed xor 0x2222, count = (params.volcanoCount).coerceAtLeast(1))
+        val volcanoes = buildVolcanoFields(
+            faultMask01,
+            boundarySigned,
+            volcanoSeed xor 0x2222,
+            count = (params.volcanoCount).coerceAtLeast(1)
+        )
 
         printHeightmap(signedTo01(volcanoes.volcanoSigned))
 //        printHeightmap(volcanoes.ashMask01)
@@ -263,33 +270,6 @@ class TectonicWorldGen(
         normalize01InPlace(faultMask01)        // -> [0,1]
 
         return BoundaryFields(boundarySigned = boundarySigned, faultMask01 = faultMask01)
-    }
-
-    private fun buildNoiseSigned(noiseSeed: Int): FieldSigned {
-        val f = zerosField(width, height)
-
-        // Reuse your current fractal noise function which adds into the array.
-        // We pass strength=1f (unit layer), normalize, then apply real strength in the mixer later.
-        addFractalNoiseSeeded(f, 1f, noiseSeed)
-
-        // Convert to signed-ish: if addFractalNoise produces mostly positive values, center it.
-        // We'll do mean-centering before normalizeSigned.
-        meanCenterInPlace(f)
-
-        return normalizeSignedInPlace(f)
-    }
-
-    private fun meanCenterInPlace(a: Array<FloatArray>) {
-        var sum = 0f
-        var n = 0
-        for (x in 0 until width) for (y in 0 until height) {
-            sum += a[x][y]
-            n++
-        }
-        val mean = sum / n.toFloat()
-        for (x in 0 until width) for (y in 0 until height) {
-            a[x][y] -= mean
-        }
     }
 
     private data class CraterFields(
