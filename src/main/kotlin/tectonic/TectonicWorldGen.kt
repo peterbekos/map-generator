@@ -1,6 +1,7 @@
 package dev.nda.tectonic
 
 import dev.nda.asciiprint.printHeightmap
+import dev.nda.fieldgen.ContinentModule
 import dev.nda.fieldgen.NoiseModule
 import dev.nda.math.Vec2
 import dev.nda.math.*
@@ -27,7 +28,8 @@ class TectonicWorldGen(
         assignPlateOwnership()
 
         // --- Build layers (Signed / 01) ---
-        val continentSigned: FieldSigned = buildContinentSigned()
+        val continentFields = ContinentModule.buildContinentSigned(width, height, worldSeed)
+        val continentSigned: FieldSigned = continentFields.continentSigned
         printHeightmap(signedTo01(continentSigned))
 
         val plateBiasSigned: FieldSigned = buildPlateBiasSigned()
@@ -123,50 +125,6 @@ class TectonicWorldGen(
             list.add(Plate(i, Vec2(sx, sy), v, bias))
         }
         return list
-    }
-
-    private fun buildContinentSigned(): FieldSigned {
-        val f = zerosField(width, height)
-
-        // Simple “one or two blobs” mask: pick 1-3 centers, add radial falloff
-        val centers = (1 + rng.nextInt(3)).coerceAtMost(3)
-        val blobs = List(centers) {
-            Vec2(rng.nextFloat() * (width - 1), rng.nextFloat() * (height - 1))
-        }
-        val blobRadius = min(width, height) * (0.35f + rng.nextFloat() * 0.15f)
-
-        for (x in 0 until width) {
-            for (y in 0 until height) {
-                var mask = 0f
-                for (c in blobs) {
-                    val dx = x - c.x
-                    val dy = y - c.y
-                    val d = sqrt(dx * dx + dy * dy)
-                    val t = 1f - (d / blobRadius)
-                    mask = max(mask, smoothstep(0f, 1f, t))
-                }
-
-                // push edges down slightly so oceans form more naturally
-                val edge = edgeFalloff(x, y)
-
-                // This is still 0..1-ish
-                val m = (mask * (1f - 0.6f * edge))
-
-                // Convert to SIGNED around 0 (neutral at ~0.5)
-                f[x][y] = (m - 0.5f)
-            }
-        }
-
-        // Normalize field into [-1, +1] so all layers are comparable
-        return normalizeSignedInPlace(f)
-    }
-
-
-    private fun edgeFalloff(x: Int, y: Int): Float {
-        val fx = min(x, width - 1 - x).toFloat() / (width * 0.5f)
-        val fy = min(y, height - 1 - y).toFloat() / (height * 0.5f)
-        val d = min(fx, fy) // 0 at edges, ~1 at center
-        return 1f - smoothstep(0.1f, 0.9f, d)
     }
 
     private fun buildPlateBiasSigned(): FieldSigned {
