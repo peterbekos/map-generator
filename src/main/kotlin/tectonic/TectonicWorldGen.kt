@@ -1,9 +1,7 @@
 package dev.nda.tectonic
 
 import dev.nda.asciiprint.printHeightmap
-import dev.nda.fieldgen.ContinentModule
-import dev.nda.fieldgen.NoiseModule
-import dev.nda.math.Vec2
+import dev.nda.fieldgen.*
 import dev.nda.math.*
 import kotlin.math.*
 import kotlin.random.Random
@@ -16,31 +14,27 @@ class TectonicWorldGen(
 ) {
     private val rng = Random(worldSeed)
 
-    private val plates: List<Plate> = generatePlates()
-
-    // For each cell: which plate owns it
-    private val plateId = Array(width) { IntArray(height) }
-
     fun generateHeightmap(): Field01 {
-        val noiseSeed = worldSeed.toInt() xor 0xBEEFCAFE.toInt()
         val craterSeed = worldSeed.toInt() xor 0xC0FFEE
         val volcanoSeed = worldSeed.toInt() xor 0x40CA
-        assignPlateOwnership()
 
         // --- Build layers (Signed / 01) ---
+        val platesFields = TectonicPlatesModule.buildTectonicPlates(width, height, worldSeed)
+
         val continentFields = ContinentModule.buildContinentSigned(width, height, worldSeed)
         val continentSigned: FieldSigned = continentFields.continentSigned
         printHeightmap(signedTo01(continentSigned))
 
-        val plateBiasSigned: FieldSigned = buildPlateBiasSigned()
+        val plateBiasFields = PlateBiasModule.buildPlateBiasSigned(width, height, platesFields)
+        val plateBiasSigned = plateBiasFields.plateBiasSigned
         printHeightmap(signedTo01(plateBiasSigned))
 
-        val boundaryFields = buildBoundaryFields()
+        val boundaryFields = PlateBoundaryModule.buildBoundaryFields(width, height, platesFields)
         val boundarySigned: FieldSigned = boundaryFields.boundarySigned
         val faultMask01: Field01 = boundaryFields.faultMask01
 
         printHeightmap(signedTo01(boundarySigned))
-//        printHeightmap(faultMask01) // already 0..1
+        printHeightmap(faultMask01) // already 0..1
 
         val noiseFields = NoiseModule.buildNoiseSigned(width, height, worldSeed)
         val noiseSigned = noiseFields.noiseSigned
@@ -82,152 +76,6 @@ class TectonicWorldGen(
 
         // --- Normalize final to [0,1] ---
         return normalize01InPlace(heightRaw)
-    }
-
-    private fun assignPlateOwnership() {
-        for (x in 0 until width) {
-            for (y in 0 until height) {
-                var bestId = 0
-                var bestD2 = Float.POSITIVE_INFINITY
-
-                for (p in plates) {
-                    val dx = x.toFloat() - p.seed.x
-                    val dy = y.toFloat() - p.seed.y
-                    val d2 = dx * dx + dy * dy
-                    if (d2 < bestD2) {
-                        bestD2 = d2
-                        bestId = p.id
-                    }
-                }
-                plateId[x][y] = bestId
-            }
-        }
-    }
-
-    private fun generatePlates(): List<Plate> {
-        val list = ArrayList<Plate>(params.plateCount)
-        for (i in 0 until params.plateCount) {
-            val sx = rng.nextFloat() * (width - 1)
-            val sy = rng.nextFloat() * (height - 1)
-
-            // Velocity: random direction + magnitude
-            val angle = rng.nextFloat() * (2f * Math.PI.toFloat())
-            val mag = 0.2f + rng.nextFloat() * 0.8f
-            val v = Vec2(cos(angle) * mag, sin(angle) * mag)
-
-            // Continental bias: choose some plates more continental, others oceanic
-            val bias = if (rng.nextFloat() < 0.55f) {
-                0.6f + rng.nextFloat() * 0.4f // continental-ish
-            } else {
-                rng.nextFloat() * 0.4f // oceanic-ish
-            }
-
-            list.add(Plate(i, Vec2(sx, sy), v, bias))
-        }
-        return list
-    }
-
-    private fun buildPlateBiasSigned(): FieldSigned {
-        val f = zerosField(width, height)
-
-        for (x in 0 until width) {
-            for (y in 0 until height) {
-                val pl = plates[plateId[x][y]]
-
-                // pl.continentalBias is ~0..1, where higher = more land
-                // Convert to signed around 0
-                f[x][y] = (pl.continentalBias - 0.5f)
-            }
-        }
-
-        return normalizeSignedInPlace(f)
-    }
-
-    private data class BoundaryFields(
-        val boundarySigned: FieldSigned, // [-1,+1]
-        val faultMask01: Field01         // [0,1]
-    )
-
-    private fun buildBoundaryFields(): BoundaryFields {
-        val boundarySigned = zerosField(width, height)      // signed contribution
-        val faultMask01 = zerosField(width, height)     // we'll store 0..1 here
-
-        // 1) Compute local boundary contributions (no spreading yet)
-        for (x in 0 until width) {
-            for (y in 0 until height) {
-                val aId = plateId[x][y]
-                val a = plates[aId]
-
-                var ridge = 0f
-                var rift = 0f
-                var rough = 0f
-
-                fun consider(nx: Int, ny: Int) {
-                    if (nx !in 0 until width || ny !in 0 until height) return
-                    val bId = plateId[nx][ny]
-                    if (bId == aId) return
-                    val b = plates[bId]
-
-                    val rel = b.velocity - a.velocity
-                    val n = normalize(b.seed - a.seed)
-
-                    val approach = dot(rel, n)       // >0 separating, <0 colliding
-                    val shear = abs(cross2(rel, n))
-
-                    val convergent = clamp01((-approach) * 1.2f)
-                    val divergent  = clamp01((approach) * 1.2f)
-                    val transform  = clamp01(shear)
-
-                    ridge += convergent * (1f - 0.5f * transform)
-                    rift  += divergent  * (1f - 0.3f * transform)
-                    rough += transform
-                }
-
-                consider(x + 1, y)
-                consider(x - 1, y)
-                consider(x, y + 1)
-                consider(x, y - 1)
-
-                val boundaryIntensity = clamp01(kotlin.math.max(ridge, kotlin.math.max(rift, rough)))
-                faultMask01[x][y] = boundaryIntensity
-
-                // Signed height effect before normalization:
-                // + ridges, - rifts
-                var v = 0f
-                v += ridge * params.ridgeStrength
-                v -= rift * params.riftStrength
-
-                // Deterministic roughness noise in [-1, +1]
-                val noise = valueNoise2D(
-                    x = x.toFloat() * 1.8f,   // frequency (tweakable)
-                    y = y.toFloat() * 1.8f,
-                    seed = aId * 92821 + 1337 // plate-stable seed
-                )
-
-                val j = (noise - 0.5f) * 2f  // remap 0..1 -> -1..1
-
-                v += (rough * params.transformRoughness) * j
-
-                // Slight mark so later blur spreads ranges outward
-                v += boundaryIntensity * 0.05f
-
-                boundarySigned[x][y] = v
-            }
-        }
-
-        // 2) Spread boundary effects outward into ranges via repeated blur
-        val passes = max(1, (params.boundaryFalloff / 2f).roundToInt())
-        repeat(passes) { blurOnce(boundarySigned) }
-
-        // (Optional) also blur fault mask a little so it reads as a proximity field
-        // Helps volcano placement and “mystic along faults” feel.
-        repeat(max(1, passes / 2)) { blurOnce(faultMask01) }
-
-        // 3) Normalize outputs
-        normalizeSignedInPlace(boundarySigned)     // -> [-1,+1]
-        normalize01InPlace(faultMask01)        // -> [0,1]
-
-        return BoundaryFields(boundarySigned = boundarySigned, faultMask01 = faultMask01)
     }
 
     private data class CraterFields(
