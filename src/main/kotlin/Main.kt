@@ -1,7 +1,8 @@
 package dev.nda
 
 import dev.nda.asciiprint.printHeightmap
-import dev.nda.tectonic.TectonicWorldGen
+import dev.nda.fieldgen.*
+import dev.nda.worldgen.*
 import kotlin.random.Random
 
 //TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
@@ -13,9 +14,13 @@ fun main() {
     w = size
     h = size
     val seed = Random.nextLong()
-    val gen = TectonicWorldGen(w, h, seed)
 
-    val heightMap = gen.generateHeightmap()
+    val worldFields = WorldBuilderModule.buildWorldFields(w, h, seed,
+        params = WorldBuilderModule.Params()
+    )
 
-    printHeightmap(heightMap)
+    worldFields.apply {
+        printHeightmap(terrainElevationFields.elevation01)
+    }
+
 }

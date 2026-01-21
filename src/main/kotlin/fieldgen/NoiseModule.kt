@@ -53,7 +53,7 @@ object NoiseModule {
     /**
      * Builds signed noise in [-1,+1] (normalized by maxAbs).
      */
-    fun buildNoiseSigned(
+    fun buildNoiseFields(
         width: Int,
         height: Int,
         worldSeed: Long,
