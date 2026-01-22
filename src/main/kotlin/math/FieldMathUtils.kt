@@ -161,3 +161,132 @@ fun meanCenterInPlace(f: Field) {
         f[x][y] -= mean
     }
 }
+
+/** Signed delta in [-1,+1] for two [0,1] fields: delta = b - a */
+fun fieldDelta01(a: Field01, b: Field01): FieldSigned {
+    val width = a.size
+    val height = a[0].size
+    val out = zerosField(width, height)
+    for (x in 0 until width) for (y in 0 until height) {
+        out[x][y] = (b[x][y] - a[x][y]).coerceIn(-1f, 1f)
+    }
+    return out
+}
+
+/** Absolute delta in [0,1] for two [0,1] fields: |b-a| */
+fun fieldAbsDelta01(a: Field01, b: Field01): Field01 {
+    val width = a.size
+    val height = a[0].size
+    val out = zerosField(width, height)
+    for (x in 0 until width) for (y in 0 until height) {
+        out[x][y] = kotlin.math.abs(b[x][y] - a[x][y]).coerceIn(0f, 1f)
+    }
+    return out
+}
+
+/** Linear blend: lerp(a,b,k) where k is [0,1] field or scalar. */
+fun fieldBlend01(a: Field01, b: Field01, k01: Float): Field01 {
+    val width = a.size
+    val height = a[0].size
+    val k = k01.coerceIn(0f, 1f)
+    val out = zerosField(width, height)
+    for (x in 0 until width) for (y in 0 until height) {
+        val v = a[x][y] + (b[x][y] - a[x][y]) * k
+        out[x][y] = v.coerceIn(0f, 1f)
+    }
+    return out
+}
+
+fun fieldBlend01(a: Field01, b: Field01, k01: Field01): Field01 {
+    val width = a.size
+    val height = a[0].size
+    val out = zerosField(width, height)
+    for (x in 0 until width) for (y in 0 until height) {
+        val k = k01[x][y].coerceIn(0f, 1f)
+        val v = a[x][y] + (b[x][y] - a[x][y]) * k
+        out[x][y] = v.coerceIn(0f, 1f)
+    }
+    return out
+}
+
+/** Per-cell max/min for [0,1] fields */
+fun fieldMax01(a: Field01, b: Field01): Field01 {
+    val width = a.size
+    val height = a[0].size
+    val out = zerosField(width, height)
+    for (x in 0 until width) for (y in 0 until height) {
+        out[x][y] = kotlin.math.max(a[x][y], b[x][y]).coerceIn(0f, 1f)
+    }
+    return out
+}
+
+fun fieldMin01(a: Field01, b: Field01): Field01 {
+    val width = a.size
+    val height = a[0].size
+    val out = zerosField(width, height)
+    for (x in 0 until width) for (y in 0 until height) {
+        out[x][y] = min(a[x][y], b[x][y]).coerceIn(0f, 1f)
+    }
+    return out
+}
+
+/**
+ * Weighted sum of multiple [0,1] fields, optionally normalized by sum(weights).
+ * Great for “mix layers” without doing it inline everywhere.
+ */
+fun fieldWeightedSum01(
+    width: Int,
+    height: Int,
+    normalizeWeights: Boolean = true,
+    vararg terms: Pair<Field01, Float>
+): Field01 {
+    val out = zerosField(width, height)
+
+    val wSum = terms.sumOf { it.second.toDouble() }.toFloat()
+    val inv = if (normalizeWeights && kotlin.math.abs(wSum) > 1e-6f) 1f / wSum else 1f
+
+    for (x in 0 until width) for (y in 0 until height) {
+        var acc = 0f
+        for ((f, w) in terms) {
+            acc += f[x][y] * w
+        }
+        out[x][y] = (acc * inv).coerceIn(0f, 1f)
+    }
+    return out
+}
+
+/**
+ * Weighted sum for signed fields ([-1,+1]), with optional normalization.
+ * Useful for “delta stacks” or combining influences that can cancel out.
+ */
+fun fieldWeightedSumSigned(
+    width: Int,
+    height: Int,
+    normalizeWeights: Boolean = true,
+    vararg terms: Pair<FieldSigned, Float>
+): FieldSigned {
+    val out = zerosField(width, height)
+
+    val wSum = terms.sumOf { abs(it.second).toDouble() }.toFloat()
+    val inv = if (normalizeWeights && abs(wSum) > 1e-6f) 1f / wSum else 1f
+
+    for (x in 0 until width) for (y in 0 until height) {
+        var acc = 0f
+        for ((f, w) in terms) {
+            acc += f[x][y] * w
+        }
+        out[x][y] = (acc * inv).coerceIn(-1f, 1f)
+    }
+    return out
+}
+
+/** Add a signed bump into a [0,1] field and clamp. */
+fun fieldAddSignedTo01(base01: Field01, deltaSigned: FieldSigned, strength: Float): Field01 {
+    val width = base01.size
+    val height = base01[0].size
+    val out = zerosField(width, height)
+    for (x in 0 until width) for (y in 0 until height) {
+        out[x][y] = (base01[x][y] + deltaSigned[x][y] * strength).coerceIn(0f, 1f)
+    }
+    return out
+}

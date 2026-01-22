@@ -11,6 +11,15 @@ object Palette {
         1.0f to RGB(255, 0, 255),
     )
 
+    val rainbowDarkGradient = listOf(
+        0.0f to RGB(0, 0, 128),
+        0.2f to RGB(0, 128, 128),
+        0.4f to RGB(0, 128, 0),
+        0.6f to RGB(128, 128, 0),
+        0.8f to RGB(128, 0, 0),
+        1.0f to RGB(128, 0, 128),
+    )
+
     val landGradient = listOf(
         // Water
         0.0f to RGB(0, 0, 64),

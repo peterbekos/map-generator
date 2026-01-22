@@ -14,6 +14,15 @@ object WorldBuilderModule {
         val volcanoParams: VolcanoModule.Params = VolcanoModule.Params(),
 
         val terrainElevationParams: TerrainElevationModule.Params = TerrainElevationModule.Params(),
+        val latitudeParams: LatitudeModule.Params = LatitudeModule.Params(),
+        val fluidElevationParams: FluidElevationModule.Params = FluidElevationModule.Params(),
+        val terrainMorphologyParams: TerrainMorphologyModule.Params = TerrainMorphologyModule.Params(),
+
+        val geothermalParams: GeothermalModule.Params = GeothermalModule.Params(),
+        val temperatureParams: TemperatureModule.Params = TemperatureModule.Params(),
+        val airPressureParams: AirPressureModule.Params = AirPressureModule.Params(),
+        val windParams: WindModule.Params = WindModule.Params(),
+        val windCirculationParams: WindCirculationModule.Params = WindCirculationModule.Params()
     )
 
     class Fields {
@@ -26,6 +35,15 @@ object WorldBuilderModule {
         lateinit var volcanoFields: VolcanoModule.Fields
 
         lateinit var terrainElevationFields: TerrainElevationModule.Fields
+        lateinit var latitudeFields: LatitudeModule.Fields
+        lateinit var fluidElevationFields: FluidElevationModule.Fields
+        lateinit var terrainMorphologyFields: TerrainMorphologyModule.Fields
+
+        lateinit var geothermalFields: GeothermalModule.Fields
+        lateinit var temperatureFields: TemperatureModule.Fields
+        lateinit var airPressureFields: AirPressureModule.Fields
+        lateinit var windFields: WindModule.Fields
+        lateinit var windCirculationFields: WindCirculationModule.Fields
     }
 
     fun buildWorldFields(width: Int, height: Int, worldSeed: Long, params: Params = Params()): Fields {
@@ -33,17 +51,17 @@ object WorldBuilderModule {
             // No Pre Reqs
             continentFields = ContinentModule.buildContinentSigned(width, height, worldSeed, params.continentParams)
             noiseFields = NoiseModule.buildNoiseFields(width, height, worldSeed, params.noiseParams)
-            tectonicPlatesFields =
-                TectonicPlatesModule.buildTectonicPlates(width, height, worldSeed, params.tectonicPlateParams)
+            tectonicPlatesFields = TectonicPlatesModule.buildTectonicPlates(width, height, worldSeed, params.tectonicPlateParams)
             craterFields = CraterModule.buildCraterFields(width, height, worldSeed, params.craterParams)
+            latitudeFields = LatitudeModule.buildLatitudeFields(width, height, params.latitudeParams)
+
+            // PreReq: Latitude
+            windCirculationFields = WindCirculationModule.buildWindCirculationFields(width, height, latitudeFields, params.windCirculationParams)
 
             // PreReq: Tectonic Plates
-            plateBiasFields =
-                PlateBiasModule.buildPlateBiasSigned(width, height, tectonicPlatesFields, params.plateBiasParams)
-            plateBoundaryFields =
-                PlateBoundaryModule.buildBoundaryFields(width, height, tectonicPlatesFields, params.plateBoundaryParams)
-            volcanoFields =
-                VolcanoModule.buildVolcanoFields(width, height, plateBoundaryFields, worldSeed, params.volcanoParams)
+            plateBiasFields = PlateBiasModule.buildPlateBiasSigned(width, height, tectonicPlatesFields, params.plateBiasParams)
+            plateBoundaryFields = PlateBoundaryModule.buildBoundaryFields(width, height, tectonicPlatesFields, params.plateBoundaryParams)
+            volcanoFields = VolcanoModule.buildVolcanoFields(width, height, plateBoundaryFields, worldSeed, params.volcanoParams)
 
             // Build Terrain Elevation
             terrainElevationFields = TerrainElevationModule.buildTerrainElevationFields(
@@ -57,6 +75,22 @@ object WorldBuilderModule {
                     volcanoFields = volcanoFields
 
                 ), params.terrainElevationParams
+            )
+            fluidElevationFields = FluidElevationModule.buildFluidElevationFields(width, height, terrainElevationFields, params.fluidElevationParams)
+            terrainMorphologyFields = TerrainMorphologyModule.buildTerrainMorphologyFields(width, height, terrainElevationFields, fluidElevationFields, params.terrainMorphologyParams)
+
+            // PreReq: Fluid Elevation
+            geothermalFields = GeothermalModule.buildGeothermalFields(width, height, volcanoFields, plateBoundaryFields, fluidElevationFields, params.geothermalParams)
+            temperatureFields = TemperatureModule.buildTemperatureFields(width, height, worldSeed, latitudeFields, fluidElevationFields, geothermalFields, params.temperatureParams)
+            airPressureFields = AirPressureModule.buildAirPressureFields(width, height, worldSeed, fluidElevationFields, temperatureFields, params.airPressureParams)
+            windFields = WindModule.buildWindBaseFields(
+                width, height, worldSeed,
+                WindModule.Inputs(
+                    terrainElevationFields,
+                    fluidElevationFields,
+                    terrainMorphologyFields,
+                    windCirculationFields
+                ), params.windParams
             )
         }
     }

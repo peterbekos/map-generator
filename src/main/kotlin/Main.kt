@@ -1,7 +1,9 @@
 package dev.nda
 
-import dev.nda.asciiprint.printHeightmap
-import dev.nda.fieldgen.*
+import dev.nda.asciiprint.Palette
+import dev.nda.asciiprint.printFieldMap01
+import dev.nda.asciiprint.printFieldVectorMap01
+import dev.nda.math.*
 import dev.nda.worldgen.*
 import kotlin.random.Random
 
@@ -19,8 +21,31 @@ fun main() {
         params = WorldBuilderModule.Params()
     )
 
+    /*
+    To keep modules clean and prevent loops:
+	•	TerrainElevationModule → elevation01
+	•	FluidElevationModule (needs elevation01)
+	•	PlanetFrameModule (lat only; no dependencies)
+	•	TerrainMorphologyModule (needs elevation01 + isWater01)
+	•	WindCirculationModule (needs latitudeSigned)
+	•	WindModule (needs WindCirculation + TerrainMorphology + FluidElevation + maybe TerrainElevation if you still want peaks, etc.)
+
+That keeps “planet physics-ish” and “terrain geometry-ish” distinct.
+     */
+
     worldFields.apply {
-        printHeightmap(terrainElevationFields.elevation01)
+        println("elevation")
+        printFieldMap01(terrainElevationFields.elevation01)
+        println("peak")
+        printFieldMap01(terrainMorphologyFields.peak01, Palette.rainbowGradient)
+        println("basin")
+        printFieldMap01(terrainMorphologyFields.basin01, Palette.rainbowGradient)
+        println("wind")
+        printFieldMap01(windFields.windSpeed01, Palette.rainbowGradient)
+        printFieldVectorMap01(windFields.windSpeed01, windFields.windDirXSigned, windFields.windDirYSigned)
+
+
+
     }
 
 }
